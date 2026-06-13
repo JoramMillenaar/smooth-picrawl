@@ -894,14 +894,16 @@
     }
 
     // ============================================================
-    //  CRAWLER ROBOT
-    //  Body is a flat hull; 4 legs each with coxa/femur/tibia.
-    //  Leg order MUST match host: FL, FR, RL, RR
+    //  CRAWLER ROBOT  (PiCrawler — square chassis, 4 corner-mounted legs)
+    //  Body is a flat SQUARE hull; the four hips sit at the corners of a
+    //  77mm x 77mm square (=> 0.77 in sim units, 1 unit = 100 mm).
+    //  Leg order MUST match host gait slots: 0=RF, 1=LF, 2=LR, 3=RR
+    //  (counter-clockwise from the front). Forward (+Z) is the camera edge.
     // ============================================================
-    const BODY_W = 1.4;   // along X (left-right)
-    const BODY_L = 2;   // along Z (front-back)
-    const BODY_H = 0.35;
-    const STAND_Y = 1.1;  // body height off ground
+    const BODY_W = 0.9;   // square: identical along X and Z
+    const BODY_L = 0.9;   // (the gait footprint has no long/short axis)
+    const BODY_H = 0.28;
+    const STAND_Y = 0.55; // body height: rest foot drop (0.5) + hip inset (0.05)
 
     const COXA_LEN = 0.33;
     const FEMUR_LEN = 0.48;
@@ -969,8 +971,10 @@
     //          -> femur beam
     //             tibiaPivot (rotates about Z = knee) at end of femur
     //               -> tibia beam
-    function buildLeg(side) {
-        // side: +1 = leg points +X (right), -1 = points -X (left)
+    function buildLeg() {
+        // Every leg is an identical right-handed chain. The Picrawler uses the
+        // same coord2polar for all four legs, so there is NO per-leg mirroring
+        // here — each leg is only rotated to its corner via root.rotation.y.
         const root = new THREE.Group();          // mounted at hip on body
         const coxaPivot = new THREE.Group();     // yaw about Y
         root.add(coxaPivot);
@@ -996,25 +1000,27 @@
         foot.position.x = TIBIA_LEN;
         tibiaPivot.add(foot);
 
-        // mirror left legs so +X beam points outward to the left
-        root.scale.x = side;
-
         return {root, coxaPivot, femurPivot, tibiaPivot};
     }
 
-    // Mount points for FL, FR, RL, RR. side sign flips X so legs splay outward.
-    const hipX = BODY_W / 2;
-    const hipZ = BODY_L / 2 - 0.2;
+    // Leg mounts in Picrawler gait-slot order: 0=RF, 1=LF, 2=LR, 3=RR.
+    // Forward = +Z (camera edge). Right = +X.
+    // rotY rotates each leg root so its +X (outward) points through its own
+    // corner diagonal; the host's coxa angle is relative to that rest heading.
+    // Hips sit at the corners of the 77mm square (±0.385 in sim units).
+    const hipX = 0.385;
+    const hipZ = 0.385;
     const legDefs = [
-        {name: 'FL', pos: [-hipX, -0.05, hipZ], side: -1},
-        {name: 'FR', pos: [hipX, -0.05, hipZ], side: +1},
-        {name: 'RL', pos: [-hipX, -0.05, -hipZ], side: -1},
-        {name: 'RR', pos: [hipX, -0.05, -hipZ], side: +1},
+        {name: 'RF', pos: [ hipX, -0.05,  hipZ], rotY: -Math.PI / 4},       // front-right
+        {name: 'LF', pos: [-hipX, -0.05,  hipZ], rotY: -3 * Math.PI / 4},   // front-left
+        {name: 'LR', pos: [-hipX, -0.05, -hipZ], rotY:  3 * Math.PI / 4},   // rear-left
+        {name: 'RR', pos: [ hipX, -0.05, -hipZ], rotY:  Math.PI / 4},       // rear-right
     ];
     const legs = [];
     legDefs.forEach(d => {
-        const leg = buildLeg(d.side);
+        const leg = buildLeg();
         leg.root.position.set(d.pos[0], d.pos[1], d.pos[2]);
+        leg.root.rotation.y = d.rotY;
         crawler.add(leg.root);
         legs.push(leg);
     });
@@ -1036,16 +1042,18 @@
         }
     }
 
-    // give the crawler a sensible neutral pose before any RX arrives
+    // give the crawler the Picrawler rest pose before any RX arrives.
+    // Angles in radians, matching host_simple.py's coord2polar([45,0,-50]):
+    //   coxa  = 0        (leg pointing straight along mount diagonal)
+    //   femur = 26.8 deg = 0.468 rad  (femur angled somewhat upward)
+    //   tibia = -140 deg = -2.443 rad (knee bent back to place foot below body)
     (function neutralPose() {
+        const restCoxa  = 0;
+        const restFemur = THREE.MathUtils.degToRad(26.8);
+        const restTibia = THREE.MathUtils.degToRad(-140.1);
         const n = [];
-        for (let L = 0; L < 4; L++) {
-            n.push(0, -0.5, 1.1);
-        }  // slight crouch
-        for (let i = 0; i < 12; i++) {
-            legAngles[i] = n[i];
-            targetAngles[i] = n[i];
-        }
+        for (let L = 0; L < 4; L++) n.push(restCoxa, restFemur, restTibia);
+        for (let i = 0; i < 12; i++) { legAngles[i] = n[i]; targetAngles[i] = n[i]; }
         applyLegAngles(legAngles);
     })();
 
