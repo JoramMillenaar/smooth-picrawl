@@ -8,12 +8,15 @@ In:  {"type":"input", "k":[x,y,z], ...}  — same message format as the UI sends
 Out: {"type":"legs", "angles":[...12...]} — same format the UI understands
 
 This controller uses the Picrawler's own coord2polar IK and MoveList foot
-positions.  The output angles are expressed in the HTML renderer's frame:
-  angles[L*3+0] = coxa  (hip yaw,    applied as coxaPivot.rotation.y)
-  angles[L*3+1] = femur (femur lift, applied as femurPivot.rotation.z)
-  angles[L*3+2] = tibia (knee bend,  applied as tibiaPivot.rotation.z)
+positions.  The output angles are the RAW Picrawler joint angles, in the exact
+order Picrawler.set_angle() / do_single_leg_angles.py use, per leg:
+  angles[L*3+0] = beta   (knee,       -> tibiaPivot in the renderer)
+  angles[L*3+1] = alpha  (femur lift, -> femurPivot in the renderer)
+  angles[L*3+2] = gamma  (hip yaw,    -> coxaPivot  in the renderer)
 
-All values are in DEGREES (the UI converts to radians with THREE.degToRad).
+All values are in DEGREES. With all three angles zero the renderer shows the
+"x-shape" reference pose (femur vertical, tibia horizontal, coxa on the 45°
+corner diagonal). The renderer applies the SAME transform to every leg.
 
 Leg order sent matches the Picrawler gait-slot order, which the HTML
 renderer now also uses:  0=RF, 1=LF, 2=LR, 3=RR  (counter-clockwise from
@@ -82,28 +85,6 @@ def coord2polar(x: float, y: float, z: float):
     gamma_hw = -(math.degrees(gamma_rad) - 45.0)
 
     return alpha_hw, beta_hw, gamma_hw
-
-
-def picrawler_to_html_angles(alpha_hw: float, beta_hw: float, gamma_hw: float):
-    """Convert Picrawler hardware degrees to the HTML renderer's angle convention.
-
-    HTML conventions (each value in DEGREES, converted to rad by the UI):
-      coxa  (rotation.y) : 0 = leg points along its mount diagonal.
-                           Positive = leg swings forward (toward nose).
-      femur (rotation.z) : 0 = femur inline with coxa (horizontal).
-                           Positive = femur lifts upward.
-      tibia (rotation.z) : 0 = tibia inline with femur (fully extended).
-                           Negative = knee folds (foot tucks toward body).
-
-    Derivation (see notebook):
-      coxa_deg  = 45 - gamma_hw          (inverts the Picrawler hw offset)
-      femur_deg = 90 - alpha_hw          (converts to elevation-from-horizontal)
-      tibia_deg = beta_hw - 90           (converts interior knee angle to bend)
-    """
-    coxa_deg  =  45.0 - gamma_hw
-    femur_deg =  90.0 - alpha_hw
-    tibia_deg = beta_hw - 90.0
-    return coxa_deg, femur_deg, tibia_deg
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,40 +184,32 @@ ACTIONS: dict[str, list] = {
     "turn_right": _TR_BASE  + _parity_mode1(_TR_BASE),
 }
 
-# Per-leg hip-yaw sign, taken straight from the Picrawler `direction` array
-# (the gamma/3rd element of each leg triplet): leg0=-1, leg1=+1, leg2=-1, leg3=+1.
-# Slots are in Picrawler order:  0=RF, 1=LF, 2=LR, 3=RR.
-# On the physical robot this just compensates for mirror-mounted servos; in the
-# simulation (no servos) it is what makes each diagonal pair yaw oppositely so
-# the gait travels straight forward instead of crabbing sideways.
-_COXA_SIGN = [-1.0, +1.0, -1.0, +1.0]
-
 # The HTML renderer's leg slots are in the SAME order as the Picrawler gait
-# slots (0=RF, 1=LF, 2=LR, 3=RR), so the output index is the slot index.
+# slots (0=RF, 1=LF, 2=LR, 3=RR), so the output index is the slot index. Every
+# leg uses the identical joint→pose transform, so no per-leg sign flipping here.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IK: convert one step's 4 foot positions → 12 HTML-degree angles
+# IK: convert one step's 4 foot positions → 12 raw joint angles
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _step_to_angles(step: list) -> list[float]:
-    """4 Picrawler foot coords → 12 HTML-degree angles, leg order RF,LF,LR,RR."""
+    """4 Picrawler foot coords → 12 raw joint angles, leg order RF,LF,LR,RR.
+
+    Per leg the triple is [beta, alpha, gamma] — the Picrawler set_angle() order.
+    """
     out = [0.0] * 12
     for slot, (x, y, z) in enumerate(step):
         alpha_hw, beta_hw, gamma_hw = coord2polar(x, y, z)
-        coxa_d, femur_d, tibia_d    = picrawler_to_html_angles(alpha_hw, beta_hw, gamma_hw)
-        coxa_d *= _COXA_SIGN[slot]
-        out[slot*3 + 0] = coxa_d
-        out[slot*3 + 1] = femur_d
-        out[slot*3 + 2] = tibia_d
+        out[slot*3 + 0] = beta_hw
+        out[slot*3 + 1] = alpha_hw
+        out[slot*3 + 2] = gamma_hw
     return out
 
 
 def _rest_angles() -> list[float]:
-    rest_coord = [X, YS, ZD]
-    a, b, g = coord2polar(*rest_coord)
-    c, f, t = picrawler_to_html_angles(a, b, g)
-    return [c, f, t] * 4
+    alpha_hw, beta_hw, gamma_hw = coord2polar(X, YS, ZD)
+    return [beta_hw, alpha_hw, gamma_hw] * 4
 
 
 # ─────────────────────────────────────────────────────────────────────────────

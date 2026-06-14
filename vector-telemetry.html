@@ -593,32 +593,32 @@
         <div class="panel-title"><span class="dot" style="background:var(--lime);color:var(--lime)"></span> JOINT SOLVE
             // rx
         </div>
-        <div class="panel-sub">12 FLOATS · 4 LEGS × [COXA · FEMUR · TIBIA]</div>
+        <div class="panel-sub">12 FLOATS · 4 LEGS × [BETA · ALPHA · GAMMA]</div>
 
         <table class="legtable" id="legTable">
             <thead>
             <tr>
                 <th>LEG</th>
-                <th>COXA°</th>
-                <th>FEMUR°</th>
-                <th>TIBIA°</th>
+                <th>BETA°</th>
+                <th>ALPHA°</th>
+                <th>GAMMA°</th>
             </tr>
             </thead>
             <tbody>
             <tr data-leg="0">
-                <td>FL</td>
+                <td>RF</td>
                 <td>--</td>
                 <td>--</td>
                 <td>--</td>
             </tr>
             <tr data-leg="1">
-                <td>FR</td>
+                <td>LF</td>
                 <td>--</td>
                 <td>--</td>
                 <td>--</td>
             </tr>
             <tr data-leg="2">
-                <td>RL</td>
+                <td>LR</td>
                 <td>--</td>
                 <td>--</td>
                 <td>--</td>
@@ -635,8 +635,9 @@
         <div style="font-size:9px;color:var(--ink-dim);margin-top:18px;line-height:1.7;letter-spacing:1px;">
             ▸ HOST RECEIVES INPUT VECTORS.<br>
             ▸ HOST RETURNS 12 JOINT ANGLES (DEG).<br>
-            ▸ ORDER: FL, FR, RL, RR.<br>
-            ▸ PER LEG: COXA(yaw), FEMUR(lift), TIBIA(knee).<br>
+            ▸ LEG ORDER: RF, LF, LR, RR.<br>
+            ▸ PER LEG: BETA(knee), ALPHA(femur), GAMMA(yaw).<br>
+            ▸ ALL ZERO = X-SHAPE (femur up, tibia flat).<br>
             ▸ MESH UPDATES FROM RX FRAME ONLY.
         </div>
 
@@ -733,8 +734,10 @@
     // ============================================================
     let ws = null;
     let txCount = 0, rxCount = 0, txWin = 0, rxWin = 0;
-    let legAngles = new Array(12).fill(0);   // radians used by renderer
-    let targetAngles = new Array(12).fill(0); // radians, target from RX (smoothed)
+    // Raw hardware joint angles in DEGREES, per leg [beta, alpha, gamma]
+    // (same triple set_angle()/do_single_leg_angles.py use). All-zero = x-shape.
+    let legAngles = new Array(12).fill(0);    // displayed (smoothed) joint angles
+    let targetAngles = new Array(12).fill(0); // latest joint angles from RX
 
     const linkPill = document.getElementById('linkPill');
     const linkTxt = document.getElementById('linkTxt');
@@ -777,8 +780,8 @@
             }
             let arr = Array.isArray(data) ? data : data.angles;
             if (!Array.isArray(arr) || arr.length < 12) return;
-            // host sends DEGREES; convert to radians targets
-            for (let i = 0; i < 12; i++) targetAngles[i] = THREE.MathUtils.degToRad(arr[i]);
+            // host sends raw joint angles in DEGREES, per leg [beta, alpha, gamma]
+            for (let i = 0; i < 12; i++) targetAngles[i] = arr[i];
             document.getElementById('rxcount').textContent = rxCount;
             document.getElementById('lastrx').textContent = 't+' + (performance.now() / 1000).toFixed(1) + 's';
             updateLegTable(arr);
@@ -1025,35 +1028,43 @@
         legs.push(leg);
     });
 
-    // Apply 12 angles (radians) to the four legs.
-    // angles[L*3+0]=coxa, +1=femur, +2=tibia
+    // Apply 12 raw joint angles (DEGREES) to the four legs.
+    // Per leg the triple is [beta, alpha, gamma] — exactly the Picrawler
+    // set_angle() order (see crawler/do_single_leg_angles.py):
+    //   beta  -> knee  (tibia)
+    //   alpha -> femur lift
+    //   gamma -> hip yaw
+    //
+    // The transform is IDENTICAL for every leg (only each leg's root.rotation.y
+    // differs, mounting it to its corner). With all three angles zero the leg
+    // takes the "x-shape" reference pose:
+    //   coxa  horizontal, along the leg's 45° corner diagonal   (gamma = 0)
+    //   femur straight up, vertical                              (alpha = 0)
+    //   tibia fully horizontal                                   (beta  = 0)
+    // These formulas reproduce Picrawler.polar2coord exactly (verified across
+    // the full joint range): femur elevation = 90 - alpha, tibia elevation =
+    // beta - alpha, foot azimuth = 45 + gamma.
+    const D = THREE.MathUtils.degToRad;
     function applyLegAngles(a) {
         for (let L = 0; L < 4; L++) {
             const leg = legs[L];
-            const coxa = a[L * 3 + 0];
-            const femur = a[L * 3 + 1];
-            const tibia = a[L * 3 + 2];
-            // coxa swings the whole leg horizontally (yaw about local Y)
-            leg.coxaPivot.rotation.y = coxa;
-            // femur lifts (rotate about Z; negative dips the beam downward in our frame)
-            leg.femurPivot.rotation.z = femur;
-            // tibia bends the knee
-            leg.tibiaPivot.rotation.z = tibia;
+            const beta = a[L * 3 + 0];
+            const alpha = a[L * 3 + 1];
+            const gamma = a[L * 3 + 2];
+            // hip yaw: 0 swings the leg onto its corner diagonal (the x-shape)
+            leg.coxaPivot.rotation.y = D(gamma);
+            // femur elevation above horizontal: 0 -> 90° (straight up)
+            leg.femurPivot.rotation.z = D(90 - alpha);
+            // tibia bend relative to the femur: 0 -> -90° (lays the tibia flat)
+            leg.tibiaPivot.rotation.z = D(beta - 90);
         }
     }
 
-    // give the crawler the Picrawler rest pose before any RX arrives.
-    // Angles in radians, matching host_simple.py's coord2polar([45,0,-50]):
-    //   coxa  = 0        (leg pointing straight along mount diagonal)
-    //   femur = 26.8 deg = 0.468 rad  (femur angled somewhat upward)
-    //   tibia = -140 deg = -2.443 rad (knee bent back to place foot below body)
+    // Before any RX arrives, show the all-zero "x-shape" reference pose: every
+    // joint angle 0 -> coxa on the 45° corner diagonal, femur vertical, tibia
+    // horizontal. (On connect the host immediately streams the real rest pose.)
     (function neutralPose() {
-        const restCoxa  = 0;
-        const restFemur = THREE.MathUtils.degToRad(26.8);
-        const restTibia = THREE.MathUtils.degToRad(-140.1);
-        const n = [];
-        for (let L = 0; L < 4; L++) n.push(restCoxa, restFemur, restTibia);
-        for (let i = 0; i < 12; i++) { legAngles[i] = n[i]; targetAngles[i] = n[i]; }
+        for (let i = 0; i < 12; i++) { legAngles[i] = 0; targetAngles[i] = 0; }
         applyLegAngles(legAngles);
     })();
 
@@ -1100,7 +1111,7 @@
         $('my').textContent = fmt(mDir.y);
         $('mz').textContent = fmt(mDir.z);
 
-        // smooth toward target joint angles from host (critically-damped-ish lerp)
+        // smooth toward target joint angles (degrees) from host
         const k = 1 - Math.pow(0.001, dt);  // ~time-constant smoothing
         for (let i = 0; i < 12; i++) legAngles[i] += (targetAngles[i] - legAngles[i]) * k;
         applyLegAngles(legAngles);
